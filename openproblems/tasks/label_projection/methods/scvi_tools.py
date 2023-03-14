@@ -1,26 +1,45 @@
 from ....tools.decorators import method
 from ....tools.utils import check_version
+from .xgboost import _xgboost
 from typing import Optional
 
 import functools
 
 _scanvi_method = functools.partial(
     method,
-    paper_name="Probabilistic harmonization and annotation of single-cell"
-    " transcriptomics data with deep generative models",
-    paper_url="https://doi.org/10.15252/msb.20209620",
+    method_summary=(
+        'scANVI or "single-cell ANnotation using Variational Inference" is a'
+        " semi-supervised variant of the scVI(Lopez et al. 2018) algorithm. Like scVI,"
+        " scANVI uses deep neural networks and stochastic optimization to model"
+        " uncertainty caused by technical noise and bias in single - cell"
+        " transcriptomics measurements. However, scANVI also leverages cell type labels"
+        " in the generative modelling. In this approach, scANVI is used to predict the"
+        " cell type labels of the unlabelled test data."
+    ),
+    paper_name=(
+        "Probabilistic harmonization and annotation of single-cell transcriptomics data"
+        " with deep generative models"
+    ),
+    paper_reference="xu2021probabilistic",
     paper_year=2021,
     code_url="https://github.com/YosefLab/scvi-tools",
-    image="openproblems-python-scvi",
+    image="openproblems-python-pytorch",
 )
 
 _scanvi_scarches_method = functools.partial(
     method,
+    method_summary=(
+        'scArches+scANVI or "Single-cell architecture surgery" is a deep learning'
+        " method for mapping new datasets onto a pre-existing reference model, using"
+        " transfer learning and parameter optimization. It first uses scANVI to build a"
+        " reference model from the training data, and then apply scArches to map the"
+        " test data onto the reference model and make predictions."
+    ),
     paper_name="Query to reference single-cell integration with transfer learning",
-    paper_url="https://doi.org/10.1101/2020.07.16.205997",
+    paper_reference="lotfollahi2020query",
     paper_year=2021,
     code_url="https://github.com/YosefLab/scvi-tools",
-    image="openproblems-python-scvi",
+    image="openproblems-python-pytorch",
 )
 
 
@@ -95,6 +114,7 @@ def _scanvi_scarches(
     n_layers=None,
     prediction_method="scanvi",
 ):
+    import numpy as np
     import scvi
 
     if test:
@@ -106,11 +126,14 @@ def _scanvi_scarches(
         n_layers = n_layers or 2
         n_hidden = n_hidden or 128
 
+    unlabeled_category = "Unknown"
+
     # new obs labels to mask test set
+    adata.obs["scanvi_labels"] = np.where(
+        adata.obs["is_train"], adata.obs["labels"], unlabeled_category
+    )
     adata_train = adata[adata.obs["is_train"]].copy()
-    adata_train.obs["scanvi_labels"] = adata_train.obs["labels"].copy()
     adata_test = adata[~adata.obs["is_train"]].copy()
-    adata_test.obs["scanvi_labels"] = "Unknown"
     scvi.model.SCVI.setup_anndata(
         adata_train, batch_key="batch", labels_key="scanvi_labels"
     )
@@ -135,7 +158,9 @@ def _scanvi_scarches(
         train_kwargs["limit_train_batches"] = 10
         train_kwargs["limit_val_batches"] = 10
     scvi_model.train(**train_kwargs)
-    model = scvi.model.SCANVI.from_scvi_model(scvi_model, unlabeled_category="Unknown")
+    model = scvi.model.SCANVI.from_scvi_model(
+        scvi_model, unlabeled_category=unlabeled_category
+    )
     model.train(**train_kwargs)
 
     query_model = scvi.model.SCANVI.load_query_data(adata_test, model)
@@ -149,7 +174,7 @@ def _scanvi_scarches(
     if prediction_method == "scanvi":
         preds = _pred_scanvi(adata, query_model)
     elif prediction_method == "xgboost":
-        preds = _pred_xgb(adata, adata_train, adata_test, query_model, test=test)
+        preds = _pred_xgb(adata, query_model, test=test)
 
     return preds
 
@@ -166,58 +191,15 @@ def _pred_scanvi(adata, query_model):
 # note: could extend test option
 def _pred_xgb(
     adata,
-    adata_train,
-    adata_test,
     query_model,
-    label_col="labels",
     test=False,
     num_round: Optional[int] = None,
 ):
-    import numpy as np
-    import xgboost as xgb
-
-    df = _classif_df(adata_train, query_model, label_col)
-
-    df["labels_int"] = df["labels"].cat.codes
-    categories = df["labels"].cat.categories
-
-    # X_train = df.drop(columns="labels")
-    X_train = df.drop(columns=["labels", "labels_int"])
-    # y_train = df["labels"].astype("category")
-    y_train = df["labels_int"].astype(int)
-
-    X_test = query_model.get_latent_representation(adata_test)
-
-    if test:
-        num_round = num_round or 2
-    else:
-        num_round = num_round or 5
-
-    xgbc = xgb.XGBClassifier(tree_method="hist", objective="multi:softprob")
-
-    xgbc.fit(X_train, y_train)
-
-    # adata_test.obs["preds_test"] = xgbc.predict(X_test)
-    adata_test.obs["preds_test"] = categories[xgbc.predict(X_test)]
-
-    preds = [
-        adata_test.obs["preds_test"][idx] if idx in adata_test.obs_names else np.nan
-        for idx in adata.obs_names
-    ]
-
-    return preds
-
-
-def _classif_df(adata, trained_model, label_col):
-    import pandas as pd
-
-    emb_data = trained_model.get_latent_representation(adata)
-
-    df = pd.DataFrame(data=emb_data, index=adata.obs_names)
-
-    df["labels"] = adata.obs[label_col]
-
-    return df
+    adata.obsm["X_emb"] = query_model.get_latent_representation(adata)
+    adata = _xgboost(
+        adata, test=test, obsm="X_emb", num_round=num_round, tree_method="hist"
+    )
+    return adata.obs["labels_pred"]
 
 
 @_scanvi_method(method_name="scANVI (All genes)")

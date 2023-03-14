@@ -1,5 +1,5 @@
 from ....tools.decorators import method
-from ....tools.normalize import log_cpm
+from ....tools.normalize import log_cp10k
 from ....tools.normalize import log_scran_pooling
 from ....tools.utils import check_version
 from typing import Optional
@@ -9,14 +9,26 @@ import numpy as np
 
 _xgboost_method = functools.partial(
     method,
+    method_summary=(
+        "XGBoost is a gradient boosting decision tree model that learns multiple tree"
+        " structures in the form of a series of input features and their values,"
+        " leading to a prediction decision, and averages predictions from all its"
+        " trees. Here, input features are normalised gene expression values."
+    ),
     paper_name="XGBoost: A Scalable Tree Boosting System",
-    paper_url="https://doi.org/10.1145/2939672.2939785",
+    paper_reference="chen2016xgboost",
     paper_year=2016,
     code_url="https://xgboost.readthedocs.io/en/stable/index.html",
 )
 
 
-def _xgboost(adata, test: bool = False, num_round: Optional[int] = None):
+def _xgboost(
+    adata,
+    test: bool = False,
+    obsm: Optional[str] = None,
+    num_round: Optional[int] = None,
+    **kwargs,
+):
     import xgboost as xgb
 
     if test:
@@ -30,12 +42,19 @@ def _xgboost(adata, test: bool = False, num_round: Optional[int] = None):
     adata_train = adata[adata.obs["is_train"]]
     adata_test = adata[~adata.obs["is_train"]].copy()
 
-    xg_train = xgb.DMatrix(adata_train.X, label=adata_train.obs["labels_int"])
-    xg_test = xgb.DMatrix(adata_test.X, label=adata_test.obs["labels_int"])
+    xg_train = xgb.DMatrix(
+        adata_train.obsm[obsm] if obsm else adata_train.X,
+        label=adata_train.obs["labels_int"],
+    )
+    xg_test = xgb.DMatrix(
+        adata_test.obsm[obsm] if obsm else adata_test.X,
+        label=adata_test.obs["labels_int"],
+    )
 
     param = dict(
         objective="multi:softmax",
         num_class=len(categories),
+        **kwargs,
     )
 
     watchlist = [(xg_train, "train")]
@@ -55,11 +74,11 @@ def _xgboost(adata, test: bool = False, num_round: Optional[int] = None):
 
 
 @_xgboost_method(
-    method_name="XGBoost (log CPM)",
+    method_name="XGBoost (log CP10k)",
     image="openproblems-python-extras",
 )
-def xgboost_log_cpm(adata, test: bool = False, num_round: Optional[int] = None):
-    adata = log_cpm(adata)
+def xgboost_log_cp10k(adata, test: bool = False, num_round: Optional[int] = None):
+    adata = log_cp10k(adata)
     return _xgboost(adata, test=test, num_round=num_round)
 
 
